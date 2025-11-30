@@ -1,0 +1,73 @@
+# Minimal BusinessFlow Agent prototype
+# Requires: openai, langchain (optional). This is generic and works with API calls.
+# Paste into Kaggle notebook and install any needed libs: !pip install openai
+
+import os
+import json
+import openai    # pip install openai
+
+# Set your API key in environment (do NOT commit keys).
+# os.environ['OPENAI_API_KEY'] = 'sk-...'
+
+OPENAI_MODEL = "gpt-4o-mini"  # or gpt-4o, or text-davinci-003 etc.
+API_KEY = os.getenv("OPENAI_API_KEY")
+
+system_prompt = """
+You are BusinessFlow Agent. For each input ticket produce a JSON object with keys:
+- classification: {intent, urgency}
+- entities: {customer_name, order_id, product, dates, other}
+- summary: short (1-2 lines)
+- suggested_actions: list of action objects {action_type, reason, confidence}
+- draft_reply: polite reply to customer (max 150 words)
+- explanation: brief reasoning for decision
+Return only valid JSON.
+"""
+
+few_shot = """
+Input: "I ordered item #A123 2 weeks ago, it hasn't arrived. Please help!"
+Output:
+{
+ "classification":{"intent":"shipping_delay","urgency":"high"},
+ "entities":{"order_id":"A123","customer_name":null,"product":null,"dates":"2 weeks"},
+ "summary":"Customer reports missing package ordered two weeks ago.",
+ "suggested_actions":[{"action_type":"check_shipment_status","reason":"order delayed >7 days","confidence":0.93},{"action_type":"offer_refund_or_reship","reason":"long delay","confidence":0.8}],
+ "draft_reply":"Sorry your order A123 hasn't arrived — I will check the shipment status right away and update you within 24 hours. If it’s lost we can reship or refund. Which do you prefer? — Support Team",
+ "explanation":"High urgency because promised delivery window exceeded."
+}
+"""
+
+def call_llm(prompt, model=OPENAI_MODEL, max_tokens=400):
+    if not API_KEY:
+        raise RuntimeError("Set OPENAI_API_KEY in environment")
+    resp = openai.ChatCompletion.create(
+        model=model,
+        messages=[
+          {"role":"system", "content": system_prompt},
+          {"role":"user", "content": few_shot},
+          {"role":"user", "content": prompt}
+        ],
+        max_tokens=max_tokens,
+        temperature=0.0
+    )
+    return resp['choices'][0]['message']['content']
+
+def analyze_ticket(ticket_text):
+    prompt = f"Input: {json.dumps(ticket_text)}\nOutput:"
+    raw = call_llm(prompt)
+    # The model should return JSON — try to parse it, else fallback to heuristics
+    try:
+        result = json.loads(raw)
+    except Exception as e:
+        # Basic fallback: try to extract JSON-looking substring
+        import re
+        m = re.search(r'\{.*\}', raw, flags=re.S)
+        if m:
+            result = json.loads(m.group())
+        else:
+            raise RuntimeError("LLM output not JSON parsable:\n" + raw)
+    return result
+
+# Example
+ticket = "Hello, I paid for order A12345 two weeks ago and still haven't received it. Order shows 'shipped' but no tracking updates."
+out = analyze_ticket(ticket)
+print(json.dumps(out, indent=2))
